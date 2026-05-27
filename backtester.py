@@ -21,16 +21,16 @@ from sklearn.preprocessing import StandardScaler
 
 warnings.filterwarnings("ignore")
 
-COOLDOWN_HOURS    = 48
+COOLDOWN_HOURS    = 24    # re-enter sooner after a loss
 LEVERAGE          = 2.5
 N_STATES          = 7
-VOTE_THRESHOLD    = 9     # out of 12
-STOP_LOSS_PCT     = 0.12  # hard stop: exit if price drops 12% from entry
-TRAIL_STOP_PCT    = 0.09  # trailing stop: exit if price drops 9% from peak
+VOTE_THRESHOLD    = 8     # out of 12 (lowered from 9 for more entries)
+STOP_LOSS_PCT     = 0.10  # hard stop: exit if price drops 10% from entry
+TRAIL_STOP_PCT    = 0.07  # trailing stop: exit if price drops 7% from peak
 REGIME_CONFIRM    = 3     # require 3 consecutive Bull Run bars before entry
-TIME_STOP_HOURS   = 24    # exit flat/losing trade after 24 hours
-PARTIAL_TAKE_PCT  = 0.05  # take 50% profit at +5% gain
-FEAR_GREED_MAX    = 60    # skip entry if Fear & Greed > 60 (greed = bad time to buy)
+TIME_STOP_HOURS   = 48    # exit flat/losing trade after 48 hours (more room)
+PARTIAL_TAKE_PCT  = 0.04  # take 50% profit at +4% gain (earlier lock-in)
+FEAR_GREED_MAX    = 75    # skip entry if Fear & Greed > 75 (only extreme greed blocks)
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -355,8 +355,8 @@ def run_backtest(
                 exit_reason = "Stop Loss"
             elif drop_from_peak <= -TRAIL_STOP_PCT:
                 exit_reason = "Trailing Stop"
-            elif hours_held >= TIME_STOP_HOURS and drop_from_entry <= 0:
-                exit_reason = "Time Stop (24h)"
+            elif hours_held >= TIME_STOP_HOURS and drop_from_entry <= 0 and regime != "Bull Run":
+                exit_reason = "Time Stop (48h)"
 
         if exit_reason:
             active_cap = entry_capital / 2 if partial_taken else entry_capital
@@ -459,13 +459,24 @@ def run_backtest(
     pv               = portfolio_df["value"]
     max_drawdown     = float(((pv - pv.cummax()) / pv.cummax() * 100).min())
 
+    winners = trades_df[trades_df["pnl_pct"] > 0]["pnl_pct"] if len(trades_df) > 0 else pd.Series(dtype=float)
+    losers  = trades_df[trades_df["pnl_pct"] <= 0]["pnl_pct"] if len(trades_df) > 0 else pd.Series(dtype=float)
+    avg_win  = float(winners.mean()) if len(winners) > 0 else 0.0
+    avg_loss = float(losers.mean())  if len(losers)  > 0 else 0.0
+    rr_ratio = float(avg_win / abs(avg_loss)) if avg_loss != 0 else 0.0
+    breakeven_wr = float(1 / (1 + rr_ratio) * 100) if rr_ratio > 0 else 50.0
+
     metrics = {
-        "total_return": total_return_pct,
-        "bh_return":    bh_return_pct,
-        "alpha":        alpha,
-        "win_rate":     win_rate,
-        "max_drawdown": max_drawdown,
-        "num_trades":   len(trades_df),
+        "total_return":  total_return_pct,
+        "bh_return":     bh_return_pct,
+        "alpha":         alpha,
+        "win_rate":      win_rate,
+        "max_drawdown":  max_drawdown,
+        "num_trades":    len(trades_df),
         "final_capital": capital,
+        "avg_win":       avg_win,
+        "avg_loss":      avg_loss,
+        "rr_ratio":      rr_ratio,
+        "breakeven_wr":  breakeven_wr,
     }
     return portfolio_df, trades_df, metrics, regime_series, df_aligned

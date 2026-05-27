@@ -8,7 +8,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from backtester import run_backtest
+from backtester import run_backtest, VOTE_THRESHOLD
 from data_loader import fetch_data, fetch_daily, fetch_fear_greed
 
 # ─── Page config ─────────────────────────────────────────────────────────────
@@ -132,7 +132,7 @@ else:
     action_emoji = "🟡"
     box_class  = "signal-wait"
     headline   = "WAIT — NO CLEAR SIGNAL YET"
-    subline    = f"Conditions aren't strong enough yet ({cur_votes}/8 indicators). Hold off."
+    subline    = f"Conditions aren't strong enough yet ({cur_votes}/{VOTE_THRESHOLD} indicators needed). Hold off."
 
 # ─── Header ──────────────────────────────────────────────────────────────────
 hcol1, hcol2 = st.columns([5, 1])
@@ -265,7 +265,7 @@ with st.expander("🔍 Why is it saying this? (tap to see)"):
     ]
 
     st.markdown(f"**Market Mood (AI model):** {cur_regime}")
-    st.markdown(f"**Signals active: {cur_votes}/12** — need 10 or more to trigger a BUY")
+    st.markdown(f"**Signals active: {cur_votes}/12** — need {VOTE_THRESHOLD} or more to trigger a BUY")
     st.markdown("---")
     for name, active, meaning in checks:
         icon = "✅" if active else "❌"
@@ -308,21 +308,46 @@ If they match → the app is pulling real data. If they don't → hit 🔄 Refre
 """)
         st.markdown("#### Current raw indicator values")
         try:
-            from backtester import compute_indicators, _squeeze as _sq
-            ind = compute_indicators(df_aligned).iloc[-1]
+            from backtester import compute_indicators
+            _ind_df = compute_indicators(df_aligned)
+            ind = _ind_df.iloc[-1]
             cp  = float(df_aligned["Close"].iloc[-1])
+
+            def _fmt(val, fmt=".1f"):
+                try:
+                    return format(float(val), fmt)
+                except Exception:
+                    return "N/A"
+
+            rsi_v    = _fmt(ind.get("rsi"))
+            adx_v    = _fmt(ind.get("adx"))
+            macd_v   = _fmt(ind.get("macd"), ".2f")
+            sig_v    = _fmt(ind.get("signal_line"), ".2f")
+            ema50_v  = _fmt(ind.get("ema50"), ",.0f")
+            ema200_v = _fmt(ind.get("ema200"), ",.0f")
+            vwap_v   = _fmt(ind.get("vwap"), ",.0f")
+            stk_v    = _fmt(ind.get("stoch_k"))
+            std_v    = _fmt(ind.get("stoch_d"))
+            st_bull  = bool(ind.get("supertrend_bullish", 0))
+
+            def _ab(ref_str):
+                try:
+                    return "above ✅" if cp > float(ref_str.replace(",","")) else "below ❌"
+                except Exception:
+                    return "N/A"
+
             st.markdown(f"""
-- **RSI:** `{ind['rsi']:.1f}` (< 90 is fine)
-- **ADX:** `{ind['adx']:.1f}` (> 25 = real trend)
-- **MACD:** `{ind['macd']:.2f}` vs Signal `{ind['signal_line']:.2f}`
-- **EMA 50:** `${ind['ema50']:,.0f}` | BTC: `${cp:,.0f}` → {"above ✅" if cp > ind['ema50'] else "below ❌"}
-- **EMA 200:** `${ind['ema200']:,.0f}` → {"above ✅" if cp > ind['ema200'] else "below ❌"}
-- **VWAP (24hr):** `${ind['vwap']:,.0f}` → {"above ✅" if cp > ind['vwap'] else "below ❌"}
-- **Stoch RSI K:** `{ind['stoch_k']:.1f}` D: `{ind['stoch_d']:.1f}`
-- **Supertrend:** {"Bullish ✅" if ind['supertrend_bullish'] else "Bearish ❌"}
+- **RSI:** `{rsi_v}` (< 90 is fine)
+- **ADX:** `{adx_v}` (> 25 = real trend)
+- **MACD:** `{macd_v}` vs Signal `{sig_v}`
+- **EMA 50:** `${ema50_v}` | BTC: `${cp:,.0f}` → {_ab(ema50_v)}
+- **EMA 200:** `${ema200_v}` → {_ab(ema200_v)}
+- **VWAP (24hr):** `${vwap_v}` → {_ab(vwap_v)}
+- **Stoch RSI K:** `{stk_v}` D: `{std_v}`
+- **Supertrend:** {"Bullish ✅" if st_bull else "Bearish ❌"}
 """)
         except Exception as e:
-            st.caption(f"Could not load raw indicators: {e}")
+            st.warning(f"Could not load raw indicators: {e}")
 
     st.markdown("""
 ---
@@ -405,19 +430,33 @@ m1.metric("Strategy Result",
 m2.metric("If You Just Held BTC",
           f"{metrics['bh_return']:+.1f}%",
           delta="Buy & Hold return")
-m3.metric("Trades That Were Profitable",
+m3.metric("Win Rate",
           f"{metrics['win_rate']:.0f}%",
-          delta=f"out of {metrics['num_trades']} trades")
-m4.metric("Worst Loss Period",
+          delta=f"{metrics['num_trades']} trades total")
+m4.metric("Worst Drawdown",
           f"{metrics['max_drawdown']:.1f}%",
-          delta="max drawdown", delta_color="inverse")
+          delta="max loss from peak", delta_color="inverse")
+
+# Second row of metrics
+m5, m6, m7, m8 = st.columns(4)
+m5.metric("Avg Winning Trade",   f"+{metrics['avg_win']:.2f}%")
+m6.metric("Avg Losing Trade",    f"{metrics['avg_loss']:.2f}%")
+m7.metric("Risk/Reward Ratio",   f"{metrics['rr_ratio']:.2f}x",
+          delta="higher = better")
+breakeven = metrics['breakeven_wr']
+above = metrics['win_rate'] > breakeven
+m8.metric("Break-even Win Rate", f"{breakeven:.0f}%",
+          delta=f"{'✅ above' if above else '⚠️ below'} break-even",
+          delta_color="normal" if above else "inverse")
 
 with st.expander("📘 What do these numbers mean?"):
     st.markdown(f"""
 - **Strategy Result** — If you started with $10,000 and followed every BUY/SELL signal, you'd have **${metrics['final_capital']:,.0f}** today.
 - **If You Just Held BTC** — Simply buying BTC and never selling returned **{metrics['bh_return']:+.1f}%** over the same period. This is the benchmark to beat.
-- **Trades That Were Profitable** — Out of every {metrics['num_trades']} trades the strategy made, about **{metrics['win_rate']:.0f}%** of them made money.
-- **Worst Loss Period** — At its worst point, the strategy was down **{metrics['max_drawdown']:.1f}%** from its peak before recovering.
+- **Win Rate** — Out of **{metrics['num_trades']}** trades, about **{metrics['win_rate']:.0f}%** made money. You don't need 50%+ to be profitable.
+- **Risk/Reward Ratio** — For every $1 you lose on a bad trade, you make **${metrics['rr_ratio']:.2f}** on a good one. Anything above 1x is healthy.
+- **Break-even Win Rate** — With a {metrics['rr_ratio']:.2f}x R/R, you only need to win **{breakeven:.0f}%** of trades to break even. Your current **{metrics['win_rate']:.0f}%** is {"above ✅ — positive edge" if above else "below ⚠️ — strategy needs improvement"}.
+- **Worst Drawdown** — At its worst, the portfolio was down **{metrics['max_drawdown']:.1f}%** from peak before recovering.
 """)
 
 st.divider()
