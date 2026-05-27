@@ -1,13 +1,9 @@
 """
-BTC Regime Trader — Streamlit Dashboard
-========================================
-Layout
-  • Top bar : Signal badge | Regime badge | Voting score | 4 key metrics
-  • Main chart : Candlestick + regime-coloured background + trade markers
-  • Portfolio chart : Strategy equity curve vs Buy-and-Hold
-  • Trade log table
+BTC Regime Trader — Robinhood Edition
+Beginner-friendly dashboard with clear buy/sell signals.
 """
 
+import datetime as _dt
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -17,301 +13,328 @@ from data_loader import fetch_data
 
 # ─── Page config ─────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="BTC Regime Trader",
+    page_title="BTC Signal — Robinhood Edition",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
 
-# ─── Custom CSS ──────────────────────────────────────────────────────────────
-st.markdown(
-    """
+# ─── CSS ─────────────────────────────────────────────────────────────────────
+st.markdown("""
 <style>
-/* ── General ── */
 [data-testid="stAppViewContainer"] { background: #0e1117; }
 [data-testid="stHeader"]           { background: transparent; }
 
-/* ── Signal / Regime badges ── */
-.badge {
-    display: inline-block;
-    padding: 10px 28px;
-    border-radius: 30px;
-    font-size: 1.3rem;
-    font-weight: 800;
-    letter-spacing: 1.5px;
-    margin-top: 6px;
+.signal-box {
+    border-radius: 16px;
+    padding: 28px 20px;
+    text-align: center;
+    margin-bottom: 10px;
 }
-.badge-long    { background:#0a1f14; color:#00e676; border:2px solid #00e676; }
-.badge-cash    { background:#1f0a0a; color:#ff5252; border:2px solid #ff5252; }
-.badge-bull    { background:#0a1f14; color:#00e676; border:1px solid #00e676; }
-.badge-bear    { background:#1f0a0a; color:#ff5252; border:1px solid #ff5252; }
-.badge-neutral { background:#12121f; color:#7c83fd; border:1px solid #7c83fd; }
+.signal-buy  { background: #0a2e1a; border: 3px solid #00e676; }
+.signal-sell { background: #2e0a0a; border: 3px solid #ff5252; }
+.signal-wait { background: #1a1a0a; border: 3px solid #ffd600; }
 
-/* ── Metric cards ── */
+.signal-emoji { font-size: 3rem; }
+.signal-title { font-size: 2rem; font-weight: 900; margin: 8px 0 4px; }
+.signal-buy  .signal-title { color: #00e676; }
+.signal-sell .signal-title { color: #ff5252; }
+.signal-wait .signal-title { color: #ffd600; }
+.signal-sub   { font-size: 1rem; color: #aaa; }
+
+.step-box {
+    background: #12141f;
+    border: 1px solid #252840;
+    border-radius: 12px;
+    padding: 18px 20px;
+    margin-bottom: 10px;
+}
+.step-title { font-weight: 700; font-size: 1.05rem; color: #fff; margin-bottom: 6px; }
+.step-body  { color: #b0b8d8; font-size: 0.95rem; line-height: 1.6; }
+
+.why-box {
+    background: #12141f;
+    border-left: 4px solid #7c83fd;
+    border-radius: 0 12px 12px 0;
+    padding: 16px 18px;
+}
+
 [data-testid="metric-container"] {
     background: #12141f;
     border: 1px solid #252840;
     border-radius: 10px;
     padding: 14px 18px;
 }
-
-/* ── Section headers ── */
-.section-header {
-    font-size: 1rem;
-    font-weight: 600;
-    color: #8b95b8;
-    text-transform: uppercase;
-    letter-spacing: 1px;
-    margin-bottom: 4px;
-}
-
-/* ── Divider ── */
 hr { border-color: #252840 !important; }
 </style>
-""",
-    unsafe_allow_html=True,
-)
+""", unsafe_allow_html=True)
 
-# ─── Data loading (cached 1 h) ────────────────────────────────────────────────
+# ─── Data loading ─────────────────────────────────────────────────────────────
 INITIAL_CAPITAL = 10_000.0
-
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _load():
     df = fetch_data()
-    return run_backtest(df, initial_capital=INITIAL_CAPITAL)
+    # Run backtest at 1x leverage — Robinhood doesn't offer leveraged BTC
+    return run_backtest(df, initial_capital=INITIAL_CAPITAL, leverage=1.0)
 
-
-# ─── Helpers ─────────────────────────────────────────────────────────────────
 REGIME_FILL = {
     "Bull Run":   "rgba(0,230,118,0.07)",
     "Bear/Crash": "rgba(255,82,82,0.09)",
     "Neutral":    "rgba(124,131,253,0.04)",
 }
 
-
-def _regime_vrects(fig, regime_series: pd.Series, row=None, col=None):
-    """Add coloured vertical bands for each regime period."""
+def _regime_vrects(fig, regime_series):
     prev, t0 = None, None
     for t, r in regime_series.items():
         key = "Neutral" if r.startswith("Neutral") else r
         if key != prev:
             if prev is not None:
-                kw = dict(x0=t0, x1=t, fillcolor=REGIME_FILL.get(prev, "rgba(80,80,80,0.03)"),
-                          opacity=1, layer="below", line_width=0)
-                if row:
-                    kw.update(row=row, col=col)
-                fig.add_vrect(**kw)
+                fig.add_vrect(x0=t0, x1=t,
+                    fillcolor=REGIME_FILL.get(prev, "rgba(80,80,80,0.03)"),
+                    opacity=1, layer="below", line_width=0)
             prev, t0 = key, t
     if prev is not None:
-        kw = dict(x0=t0, x1=regime_series.index[-1],
-                  fillcolor=REGIME_FILL.get(prev, "rgba(80,80,80,0.03)"),
-                  opacity=1, layer="below", line_width=0)
-        if row:
-            kw.update(row=row, col=col)
-        fig.add_vrect(**kw)
+        fig.add_vrect(x0=t0, x1=regime_series.index[-1],
+            fillcolor=REGIME_FILL.get(prev, "rgba(80,80,80,0.03)"),
+            opacity=1, layer="below", line_width=0)
 
-
-def _dark_layout(fig, height=500):
-    fig.update_layout(
-        template="plotly_dark",
-        height=height,
-        margin=dict(l=0, r=0, t=10, b=0),
-        plot_bgcolor="#0e1117",
-        paper_bgcolor="#0e1117",
-        font=dict(color="#b0b8d8"),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        xaxis_rangeslider_visible=False,
-    )
-
-
-# ─── Load data ───────────────────────────────────────────────────────────────
-import datetime as _dt
-
-with st.spinner("Fetching BTC-USD data and training HMM (7 states)…"):
+# ─── Load ─────────────────────────────────────────────────────────────────────
+with st.spinner("Scanning BTC market conditions…"):
     portfolio_df, trades_df, metrics, regime_series, df_aligned = _load()
 
 load_time = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-latest = portfolio_df.iloc[-1]
-cur_signal = latest["signal"]
-cur_regime = latest["regime"]
-cur_votes = int(latest["votes"])
-
-# Last candle timestamp from the actual data
 last_candle = pd.to_datetime(df_aligned.index[-1]).strftime("%Y-%m-%d %H:%M UTC")
 
+latest   = portfolio_df.iloc[-1]
+cur_signal = latest["signal"]   # "Long" or "Cash"
+cur_regime = latest["regime"]
+cur_votes  = int(latest["votes"])
+cur_price  = latest["close"]
+
+# ─── Determine action ────────────────────────────────────────────────────────
+if cur_signal == "Long":
+    action     = "BUY"
+    action_emoji = "🟢"
+    box_class  = "signal-buy"
+    headline   = "NOW IS A GOOD TIME TO BUY BTC"
+    subline    = f"The AI model sees a Bull Run + {cur_votes}/8 indicators agree"
+elif cur_regime == "Bear/Crash":
+    action     = "SELL / STAY OUT"
+    action_emoji = "🔴"
+    box_class  = "signal-sell"
+    headline   = "NOT A GOOD TIME — STAY OUT"
+    subline    = "Market is in Bear/Crash mode. If you hold BTC, consider selling."
+else:
+    action     = "WAIT"
+    action_emoji = "🟡"
+    box_class  = "signal-wait"
+    headline   = "WAIT — NO CLEAR SIGNAL YET"
+    subline    = f"Conditions aren't strong enough yet ({cur_votes}/8 indicators). Hold off."
+
 # ─── Header ──────────────────────────────────────────────────────────────────
-st.markdown("## BTC Regime Trader")
-col_title, col_refresh = st.columns([5, 1])
-with col_title:
-    st.markdown(
-        "_GaussianHMM · 7 states · 8-factor voting · 2.5× leverage · 48-hour cooldown_"
-    )
-with col_refresh:
-    if st.button("🔄 Refresh", help="Force a fresh data fetch and re-scan"):
+hcol1, hcol2 = st.columns([5, 1])
+with hcol1:
+    st.markdown("## 📊 BTC Signal Dashboard — Robinhood Edition")
+with hcol2:
+    if st.button("🔄 Refresh", help="Force a fresh market scan"):
         st.cache_data.clear()
         st.rerun()
 
-st.caption(f"📡 Last data candle: **{last_candle}** · Page loaded: {load_time} · Auto-refreshes every 60 min")
+st.caption(f"📡 Last BTC candle: **{last_candle}** · Scanned at: {load_time} · Auto-updates every 60 min")
 st.divider()
 
-# ─── Top row: Signal | Regime | 4 Metrics ────────────────────────────────────
-top_l, top_m, top_r = st.columns([1.2, 1.2, 3.6])
+# ─── MAIN SIGNAL BOX ─────────────────────────────────────────────────────────
+st.markdown(f"""
+<div class="signal-box {box_class}">
+    <div class="signal-emoji">{action_emoji}</div>
+    <div class="signal-title">{headline}</div>
+    <div class="signal-sub">{subline}</div>
+</div>
+""", unsafe_allow_html=True)
 
-with top_l:
-    st.markdown('<p class="section-header">Current Signal</p>', unsafe_allow_html=True)
-    sc = "badge-long" if cur_signal == "Long" else "badge-cash"
-    st.markdown(f'<div class="badge {sc}">{cur_signal}</div>', unsafe_allow_html=True)
-
-with top_m:
-    st.markdown('<p class="section-header">Market Regime</p>', unsafe_allow_html=True)
-    rc = "badge-bull" if cur_regime == "Bull Run" else ("badge-bear" if cur_regime == "Bear/Crash" else "badge-neutral")
-    st.markdown(f'<div class="badge {rc}">{cur_regime}</div>', unsafe_allow_html=True)
-    st.caption(f"Voting score: **{cur_votes}/8** signals active")
-
-with top_r:
-    m1, m2, m3, m4 = st.columns(4)
-    ret_delta = f"{metrics['alpha']:+.1f}% vs B&H"
-    m1.metric("Total Return", f"{metrics['total_return']:.1f}%", delta=ret_delta)
-    m2.metric("Alpha vs B&H", f"{metrics['alpha']:+.1f}%")
-    m3.metric("Win Rate", f"{metrics['win_rate']:.1f}%")
-    m4.metric("Max Drawdown", f"{metrics['max_drawdown']:.1f}%")
+# ─── Current BTC price + vote bar ────────────────────────────────────────────
+p1, p2, p3 = st.columns(3)
+p1.metric("BTC Price Right Now", f"${cur_price:,.2f}")
+p2.metric("Signal Strength", f"{cur_votes}/8 indicators aligned",
+          delta="Strong" if cur_votes >= 7 else ("Moderate" if cur_votes >= 5 else "Weak"))
+p3.metric("Market Mood", cur_regime)
 
 st.divider()
 
-# ─── Candlestick chart ───────────────────────────────────────────────────────
-st.markdown('<p class="section-header">BTC-USD · Hourly · Regime Background</p>', unsafe_allow_html=True)
+# ─── WHAT TO DO ON ROBINHOOD ─────────────────────────────────────────────────
+st.markdown("### 📱 What To Do Right Now on Robinhood")
 
-days_options = [30, 60, 90, 180, 365, 730]
-chart_window = st.select_slider(
-    "Chart window (days)",
-    options=days_options,
-    value=90,
-    format_func=lambda x: f"{x}d",
-)
+if action == "BUY":
+    st.markdown("""
+<div class="step-box">
+    <div class="step-title">Step 1 — Open Robinhood</div>
+    <div class="step-body">Tap the Robinhood app on your phone.</div>
+</div>
+<div class="step-box">
+    <div class="step-title">Step 2 — Search for Bitcoin</div>
+    <div class="step-body">Tap the search icon and type <b>BTC</b> or <b>Bitcoin</b>. Tap on it.</div>
+</div>
+<div class="step-box">
+    <div class="step-title">Step 3 — Tap "Buy"</div>
+    <div class="step-body">Enter the dollar amount you want to invest. <b>Only use money you're okay losing.</b> Start small — $50–$100 to test.</div>
+</div>
+<div class="step-box">
+    <div class="step-title">Step 4 — Watch this dashboard daily</div>
+    <div class="step-body">Come back here every day. The moment the signal turns <b style="color:#ff5252">🔴 SELL / STAY OUT</b>, open Robinhood and sell your BTC.</div>
+</div>
+""", unsafe_allow_html=True)
 
-cutoff = df_aligned.index[-1] - pd.Timedelta(days=chart_window)
+elif action == "SELL / STAY OUT":
+    st.markdown("""
+<div class="step-box">
+    <div class="step-title">⚠️ If you currently hold BTC on Robinhood</div>
+    <div class="step-body">Open Robinhood → tap your BTC position → tap <b>Sell</b> → sell all or part of it. The market is in a bearish phase.</div>
+</div>
+<div class="step-box">
+    <div class="step-title">If you don't hold BTC right now</div>
+    <div class="step-body">Do nothing. Stay in cash. Wait for a 🟢 BUY signal before entering.</div>
+</div>
+""", unsafe_allow_html=True)
+
+else:
+    st.markdown("""
+<div class="step-box">
+    <div class="step-title">Do nothing for now</div>
+    <div class="step-body">The market conditions aren't strong enough to act. Don't force a trade. Check back in a few hours — signals can change quickly.</div>
+</div>
+<div class="step-box">
+    <div class="step-title">If you already hold BTC</div>
+    <div class="step-body">Hold and don't panic sell. The market isn't in crash mode, just unclear. Wait for a clearer signal.</div>
+</div>
+""", unsafe_allow_html=True)
+
+# ─── WHY section ─────────────────────────────────────────────────────────────
+with st.expander("🔍 Why is it saying this? (tap to see)"):
+    indicators_explained = [
+        ("RSI < 90",             cur_votes >= 1, "Bitcoin isn't overbought"),
+        ("Momentum > 1%",        cur_votes >= 2, "Price has upward momentum"),
+        ("Volatility < 6%",      cur_votes >= 3, "Market isn't too wild/risky"),
+        ("Volume above average", cur_votes >= 4, "More people are buying than usual"),
+        ("ADX > 25",             cur_votes >= 5, "There's a real trend, not just chop"),
+        ("Above 50hr average",   cur_votes >= 6, "Short-term trend is up"),
+        ("Above 200hr average",  cur_votes >= 7, "Long-term trend is up"),
+        ("MACD bullish",         cur_votes >= 8, "Momentum indicator is positive"),
+    ]
+    st.markdown(f"**Market Mood (AI model):** {cur_regime}")
+    st.markdown(f"**Signals active: {cur_votes}/8** — need 7 or more to trigger a BUY")
+    st.markdown("---")
+    for name, active, meaning in indicators_explained:
+        icon = "✅" if active else "❌"
+        st.markdown(f"{icon} **{name}** — {meaning}")
+
+st.divider()
+
+# ─── CHART ───────────────────────────────────────────────────────────────────
+st.markdown("### 📈 BTC Price Chart (last 90 days)")
+st.caption("🟢 Green background = Bull Run &nbsp;&nbsp; 🔴 Red background = Bear/Crash &nbsp;&nbsp; ▲ = Buy signal &nbsp;&nbsp; ▼ = Sell signal")
+
+cutoff = df_aligned.index[-1] - pd.Timedelta(days=90)
 cdf = df_aligned[df_aligned.index >= cutoff]
 c_regime = regime_series[regime_series.index.isin(cdf.index)]
 
-fig_candle = go.Figure()
-_regime_vrects(fig_candle, c_regime)
+fig = go.Figure()
+_regime_vrects(fig, c_regime)
 
-fig_candle.add_trace(
-    go.Candlestick(
-        x=cdf.index,
-        open=cdf["Open"],
-        high=cdf["High"],
-        low=cdf["Low"],
-        close=cdf["Close"],
-        name="BTC-USD",
-        increasing_line_color="#00e676",
-        decreasing_line_color="#ff5252",
-        increasing_fillcolor="#00e676",
-        decreasing_fillcolor="#ff5252",
-    )
-)
+fig.add_trace(go.Candlestick(
+    x=cdf.index,
+    open=cdf["Open"], high=cdf["High"],
+    low=cdf["Low"],   close=cdf["Close"],
+    name="BTC-USD",
+    increasing_line_color="#00e676",
+    decreasing_line_color="#ff5252",
+    increasing_fillcolor="#00e676",
+    decreasing_fillcolor="#ff5252",
+))
 
 # Trade markers
 if not trades_df.empty:
     visible = trades_df[trades_df["exit_time"] >= cdf.index[0]]
     entries = visible[visible["entry_time"] >= cdf.index[0]]
     if not entries.empty:
-        fig_candle.add_trace(
-            go.Scatter(
-                x=entries["entry_time"],
-                y=entries["entry_price"],
-                mode="markers",
-                marker=dict(symbol="triangle-up", color="#00e676", size=11, line=dict(color="#fff", width=0.5)),
-                name="Entry (Long)",
-                hovertemplate="<b>BUY</b><br>%{x}<br>$%{y:,.0f}<extra></extra>",
-            )
-        )
+        fig.add_trace(go.Scatter(
+            x=entries["entry_time"], y=entries["entry_price"],
+            mode="markers",
+            marker=dict(symbol="triangle-up", color="#00e676", size=13,
+                        line=dict(color="#fff", width=0.5)),
+            name="BUY signal",
+            hovertemplate="<b>BUY</b><br>%{x}<br>$%{y:,.0f}<extra></extra>",
+        ))
     if not visible.empty:
         colors = ["#00e676" if p > 0 else "#ff5252" for p in visible["pnl_pct"]]
-        fig_candle.add_trace(
-            go.Scatter(
-                x=visible["exit_time"],
-                y=visible["exit_price"],
-                mode="markers",
-                marker=dict(symbol="triangle-down", color=colors, size=11, line=dict(color="#fff", width=0.5)),
-                name="Exit",
-                hovertemplate="<b>SELL</b><br>%{x}<br>$%{y:,.0f}<extra></extra>",
-                customdata=visible["pnl_pct"].values,
-            )
-        )
+        fig.add_trace(go.Scatter(
+            x=visible["exit_time"], y=visible["exit_price"],
+            mode="markers",
+            marker=dict(symbol="triangle-down", color=colors, size=13,
+                        line=dict(color="#fff", width=0.5)),
+            name="SELL signal",
+            hovertemplate="<b>SELL</b><br>%{x}<br>$%{y:,.0f}<extra></extra>",
+        ))
 
-_dark_layout(fig_candle, height=520)
-fig_candle.update_xaxis(title_text="")
-fig_candle.update_yaxis(title_text="Price (USD)", tickprefix="$")
-st.plotly_chart(fig_candle, use_container_width=True)
-
-# ─── Equity curve ────────────────────────────────────────────────────────────
-st.markdown('<p class="section-header">Portfolio Equity · Strategy vs Buy-and-Hold</p>', unsafe_allow_html=True)
-
-bh_start = float(df_aligned["Close"].iloc[0])
-bh_values = INITIAL_CAPITAL * (df_aligned["Close"] / bh_start)
-
-fig_eq = go.Figure()
-_regime_vrects(fig_eq, regime_series)
-
-fig_eq.add_trace(
-    go.Scatter(
-        x=portfolio_df.index,
-        y=portfolio_df["value"],
-        name="HMM Strategy (2.5× lev.)",
-        line=dict(color="#00e676", width=2),
-        fill="tozeroy",
-        fillcolor="rgba(0,230,118,0.05)",
-    )
+fig.update_layout(
+    template="plotly_dark", height=460,
+    margin=dict(l=0, r=0, t=10, b=0),
+    plot_bgcolor="#0e1117", paper_bgcolor="#0e1117",
+    font=dict(color="#b0b8d8"),
+    xaxis_rangeslider_visible=False,
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
 )
-fig_eq.add_trace(
-    go.Scatter(
-        x=df_aligned.index,
-        y=bh_values,
-        name="Buy & Hold",
-        line=dict(color="#7c83fd", width=1.5, dash="dot"),
-    )
-)
-_dark_layout(fig_eq, height=280)
-fig_eq.update_yaxis(title_text="Portfolio Value ($)", tickprefix="$", tickformat=",.0f")
-st.plotly_chart(fig_eq, use_container_width=True)
+fig.update_yaxis(tickprefix="$")
+st.plotly_chart(fig, use_container_width=True)
 
-# ─── Summary stats row ───────────────────────────────────────────────────────
 st.divider()
-s1, s2, s3, s4, s5, s6 = st.columns(6)
-s1.metric("Starting Capital",    f"${INITIAL_CAPITAL:,.0f}")
-s2.metric("Final Capital",       f"${metrics['final_capital']:,.0f}")
-s3.metric("Total Trades",        metrics["num_trades"])
-s4.metric("Buy & Hold Return",   f"{metrics['bh_return']:.1f}%")
-s5.metric("Strategy Return",     f"{metrics['total_return']:.1f}%")
-s6.metric("Alpha",               f"{metrics['alpha']:+.1f}%")
 
-# ─── Trade log ───────────────────────────────────────────────────────────────
+# ─── PERFORMANCE (plain English) ─────────────────────────────────────────────
+st.markdown("### 📊 How Has This Strategy Performed? (Last 2 Years, No Leverage)")
+st.caption("This shows what *would have happened* if you followed every signal over the past 2 years starting with $10,000.")
+
+m1, m2, m3, m4 = st.columns(4)
+m1.metric("Strategy Result",
+          f"${metrics['final_capital']:,.0f}",
+          delta=f"{metrics['total_return']:+.1f}% on $10k")
+m2.metric("If You Just Held BTC",
+          f"{metrics['bh_return']:+.1f}%",
+          delta="Buy & Hold return")
+m3.metric("Trades That Were Profitable",
+          f"{metrics['win_rate']:.0f}%",
+          delta=f"out of {metrics['num_trades']} trades")
+m4.metric("Worst Loss Period",
+          f"{metrics['max_drawdown']:.1f}%",
+          delta="max drawdown", delta_color="inverse")
+
+with st.expander("📘 What do these numbers mean?"):
+    st.markdown(f"""
+- **Strategy Result** — If you started with $10,000 and followed every BUY/SELL signal, you'd have **${metrics['final_capital']:,.0f}** today.
+- **If You Just Held BTC** — Simply buying BTC and never selling returned **{metrics['bh_return']:+.1f}%** over the same period. This is the benchmark to beat.
+- **Trades That Were Profitable** — Out of every {metrics['num_trades']} trades the strategy made, about **{metrics['win_rate']:.0f}%** of them made money.
+- **Worst Loss Period** — At its worst point, the strategy was down **{metrics['max_drawdown']:.1f}%** from its peak before recovering.
+""")
+
 st.divider()
-st.markdown(f'<p class="section-header">Trade Log ({metrics["num_trades"]} completed trades)</p>', unsafe_allow_html=True)
 
-if not trades_df.empty:
-    disp = trades_df.copy()
-    disp["entry_time"] = pd.to_datetime(disp["entry_time"]).dt.strftime("%Y-%m-%d %H:%M")
-    disp["exit_time"]  = pd.to_datetime(disp["exit_time"]).dt.strftime("%Y-%m-%d %H:%M")
-    disp["entry_price"] = disp["entry_price"].map("${:,.2f}".format)
-    disp["exit_price"]  = disp["exit_price"].map("${:,.2f}".format)
-    disp["pnl_pct"]     = disp["pnl_pct"].map("{:+.2f}%".format)
-    disp["pnl_dollar"]  = disp["pnl_dollar"].map("${:+,.2f}".format)
-    disp.columns = ["Entry Time", "Exit Time", "Entry $", "Exit $", "PnL %", "PnL $", "Reason"]
-    st.dataframe(disp, use_container_width=True, hide_index=True)
-else:
-    st.info("No completed trades in the backtest window. The strategy requires Bull Run regime + 7/8 signals aligned simultaneously.")
+# ─── TRADE LOG ───────────────────────────────────────────────────────────────
+with st.expander(f"📋 Full Trade History ({metrics['num_trades']} trades — tap to view)"):
+    if not trades_df.empty:
+        disp = trades_df.copy()
+        disp["entry_time"]  = pd.to_datetime(disp["entry_time"]).dt.strftime("%b %d %Y %H:%M")
+        disp["exit_time"]   = pd.to_datetime(disp["exit_time"]).dt.strftime("%b %d %Y %H:%M")
+        disp["entry_price"] = disp["entry_price"].map("${:,.2f}".format)
+        disp["exit_price"]  = disp["exit_price"].map("${:,.2f}".format)
+        disp["pnl_pct"]     = disp["pnl_pct"].map("{:+.2f}%".format)
+        disp["pnl_dollar"]  = disp["pnl_dollar"].map("${:+,.2f}".format)
+        disp.columns = ["Bought", "Sold", "Buy Price", "Sell Price", "Profit/Loss %", "Profit/Loss $", "Why Sold"]
+        st.dataframe(disp, use_container_width=True, hide_index=True)
+    else:
+        st.info("No completed trades yet.")
 
-# ─── Legend ──────────────────────────────────────────────────────────────────
+# ─── DISCLAIMER ──────────────────────────────────────────────────────────────
 st.divider()
-leg1, leg2, leg3 = st.columns(3)
-leg1.markdown("🟢 **Green background** — Bull Run regime")
-leg2.markdown("🔴 **Red background** — Bear / Crash regime")
-leg3.markdown("⚪ **Grey background** — Neutral regime")
-
-st.caption(
-    "⚠️ Simulation only. 2.5× leverage is applied to PnL, not margin. "
-    "Past performance does not guarantee future results. Not financial advice."
-)
+st.markdown("""
+> ⚠️ **Important:** This tool does not connect to Robinhood or execute any trades.
+> It only tells you what the AI model sees in the market. All trades are your own decision.
+> Never invest more than you can afford to lose. Crypto is highly volatile.
+""")
