@@ -273,6 +273,68 @@ with st.expander("🔍 Why is it saying this? (tap to see)"):
 
 st.divider()
 
+# ─── DATA VERIFICATION ───────────────────────────────────────────────────────
+with st.expander("🔎 Verify the data is real — cross-check these numbers yourself"):
+    st.markdown("""
+**How to verify this app is using real live data and not making things up:**
+
+Every number below can be independently checked against a public source.
+If they match → the app is pulling real data. If they don't → hit 🔄 Refresh.
+""")
+
+    vc1, vc2 = st.columns(2)
+
+    with vc1:
+        st.markdown("#### BTC Price (last 5 hourly candles)")
+        last5 = df_aligned[["Open","High","Low","Close","Volume"]].tail(5).copy()
+        last5.index = last5.index.strftime("%b %d %H:%M UTC")
+        last5["Close"] = last5["Close"].map("${:,.2f}".format)
+        last5["High"]  = last5["High"].map("${:,.2f}".format)
+        last5["Low"]   = last5["Low"].map("${:,.2f}".format)
+        last5["Open"]  = last5["Open"].map("${:,.2f}".format)
+        last5["Volume"] = last5["Volume"].map("{:,.0f}".format)
+        st.dataframe(last5, use_container_width=True)
+        st.caption("✅ Compare the most recent Close price to what Robinhood shows right now. They should be within a few dollars (Yahoo Finance has a ~15 min delay).")
+
+    with vc2:
+        st.markdown("#### Where every number comes from")
+        st.markdown("""
+| Data | Source | How to verify |
+|---|---|---|
+| BTC price (OHLCV) | Yahoo Finance | Compare to [finance.yahoo.com](https://finance.yahoo.com/quote/BTC-USD) |
+| Fear & Greed Index | alternative.me | Check [alternative.me/crypto/fear-and-greed-index](https://alternative.me/crypto/fear-and-greed-index/) |
+| RSI, MACD, EMA etc | Calculated from Yahoo price data | Compare to [TradingView BTC/USD](https://www.tradingview.com/chart/?symbol=BTCUSD) |
+| Market Regime | HMM AI model trained on price history | No external source — this is the app's own analysis |
+""")
+        st.markdown("#### Current raw indicator values")
+        try:
+            from backtester import compute_indicators, _squeeze as _sq
+            ind = compute_indicators(df_aligned).iloc[-1]
+            cp  = float(df_aligned["Close"].iloc[-1])
+            st.markdown(f"""
+- **RSI:** `{ind['rsi']:.1f}` (< 90 is fine)
+- **ADX:** `{ind['adx']:.1f}` (> 25 = real trend)
+- **MACD:** `{ind['macd']:.2f}` vs Signal `{ind['signal_line']:.2f}`
+- **EMA 50:** `${ind['ema50']:,.0f}` | BTC: `${cp:,.0f}` → {"above ✅" if cp > ind['ema50'] else "below ❌"}
+- **EMA 200:** `${ind['ema200']:,.0f}` → {"above ✅" if cp > ind['ema200'] else "below ❌"}
+- **VWAP (24hr):** `${ind['vwap']:,.0f}` → {"above ✅" if cp > ind['vwap'] else "below ❌"}
+- **Stoch RSI K:** `{ind['stoch_k']:.1f}` D: `{ind['stoch_d']:.1f}`
+- **Supertrend:** {"Bullish ✅" if ind['supertrend_bullish'] else "Bearish ❌"}
+""")
+        except Exception as e:
+            st.caption(f"Could not load raw indicators: {e}")
+
+    st.markdown("""
+---
+**What the 15-minute delay means for you:**
+The BTC price shown here is roughly 15 minutes behind what Robinhood shows.
+This is fine — the signals are based on hourly candles, so a 15-minute lag
+doesn't meaningfully change the signal. If it says BUY at 2pm, it's still
+valid at 2:10pm.
+""")
+
+st.divider()
+
 # ─── CHART ───────────────────────────────────────────────────────────────────
 st.markdown("### 📈 BTC Price Chart (last 90 days)")
 st.caption("🟢 Green background = Bull Run &nbsp;&nbsp; 🔴 Red background = Bear/Crash &nbsp;&nbsp; ▲ = Buy signal &nbsp;&nbsp; ▼ = Sell signal")
