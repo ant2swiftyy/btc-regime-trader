@@ -125,19 +125,34 @@ def _dark_layout(fig, height=500):
 
 
 # ─── Load data ───────────────────────────────────────────────────────────────
+import datetime as _dt
+
 with st.spinner("Fetching BTC-USD data and training HMM (7 states)…"):
     portfolio_df, trades_df, metrics, regime_series, df_aligned = _load()
+
+load_time = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 latest = portfolio_df.iloc[-1]
 cur_signal = latest["signal"]
 cur_regime = latest["regime"]
 cur_votes = int(latest["votes"])
 
+# Last candle timestamp from the actual data
+last_candle = pd.to_datetime(df_aligned.index[-1]).strftime("%Y-%m-%d %H:%M UTC")
+
 # ─── Header ──────────────────────────────────────────────────────────────────
 st.markdown("## BTC Regime Trader")
-st.markdown(
-    "_GaussianHMM · 7 states · 8-factor voting · 2.5× leverage · 48-hour cooldown_"
-)
+col_title, col_refresh = st.columns([5, 1])
+with col_title:
+    st.markdown(
+        "_GaussianHMM · 7 states · 8-factor voting · 2.5× leverage · 48-hour cooldown_"
+    )
+with col_refresh:
+    if st.button("🔄 Refresh", help="Force a fresh data fetch and re-scan"):
+        st.cache_data.clear()
+        st.rerun()
+
+st.caption(f"📡 Last data candle: **{last_candle}** · Page loaded: {load_time} · Auto-refreshes every 60 min")
 st.divider()
 
 # ─── Top row: Signal | Regime | 4 Metrics ────────────────────────────────────
