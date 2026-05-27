@@ -9,7 +9,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from backtester import run_backtest
-from data_loader import fetch_data
+from data_loader import fetch_data, fetch_daily, fetch_fear_greed
 
 # ─── Page config ─────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -73,9 +73,12 @@ INITIAL_CAPITAL = 10_000.0
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _load():
-    df = fetch_data()
-    # Run backtest at 1x leverage — Robinhood doesn't offer leveraged BTC
-    return run_backtest(df, initial_capital=INITIAL_CAPITAL, leverage=1.0)
+    df       = fetch_data()
+    daily_df = fetch_daily()
+    fg       = fetch_fear_greed()
+    result   = run_backtest(df, initial_capital=INITIAL_CAPITAL, leverage=1.0,
+                            daily_df=daily_df, fear_greed=fg)
+    return result, fg
 
 REGIME_FILL = {
     "Bull Run":   "rgba(0,230,118,0.07)",
@@ -100,7 +103,7 @@ def _regime_vrects(fig, regime_series):
 
 # ─── Load ─────────────────────────────────────────────────────────────────────
 with st.spinner("Scanning BTC market conditions…"):
-    portfolio_df, trades_df, metrics, regime_series, df_aligned = _load()
+    (portfolio_df, trades_df, metrics, regime_series, df_aligned), fg_series = _load()
 
 load_time = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 last_candle = pd.to_datetime(df_aligned.index[-1]).strftime("%Y-%m-%d %H:%M UTC")
@@ -153,11 +156,29 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # ─── Current BTC price + vote bar ────────────────────────────────────────────
-p1, p2, p3 = st.columns(3)
+p1, p2, p3, p4 = st.columns(4)
 p1.metric("BTC Price Right Now", f"${cur_price:,.2f}")
 p2.metric("Signal Strength", f"{cur_votes}/12 indicators aligned",
           delta="Strong" if cur_votes >= 10 else ("Moderate" if cur_votes >= 7 else "Weak"))
-p3.metric("Market Mood", cur_regime)
+p3.metric("Market Mood (AI)", cur_regime)
+
+# Fear & Greed
+today = pd.Timestamp.now().normalize()
+fg_val = None
+if not fg_series.empty:
+    fg_idx = fg_series.reindex([today], method="ffill")
+    if not fg_idx.empty:
+        fg_val = int(fg_idx.iloc[0])
+if fg_val is not None:
+    if fg_val <= 25:   fg_label = "Extreme Fear"
+    elif fg_val <= 45: fg_label = "Fear"
+    elif fg_val <= 55: fg_label = "Neutral"
+    elif fg_val <= 75: fg_label = "Greed"
+    else:              fg_label = "Extreme Greed"
+    fg_delta = "Good time to buy" if fg_val <= 45 else ("Risky — wait" if fg_val > 60 else "Neutral")
+    p4.metric(f"Fear & Greed: {fg_label}", fg_val, delta=fg_delta)
+else:
+    p4.metric("Fear & Greed", "Unavailable")
 
 st.divider()
 

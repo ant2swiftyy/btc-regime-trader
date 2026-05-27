@@ -21,13 +21,16 @@ from sklearn.preprocessing import StandardScaler
 
 warnings.filterwarnings("ignore")
 
-COOLDOWN_HOURS  = 48
-LEVERAGE        = 2.5
-N_STATES        = 7
-VOTE_THRESHOLD  = 9    # out of 12
-STOP_LOSS_PCT   = 0.12  # exit if price drops 12% from entry
-TRAIL_STOP_PCT  = 0.09  # exit if price drops 9% from the peak since entry
-REGIME_CONFIRM  = 3     # require 3 consecutive Bull Run bars before entering
+COOLDOWN_HOURS    = 48
+LEVERAGE          = 2.5
+N_STATES          = 7
+VOTE_THRESHOLD    = 9     # out of 12
+STOP_LOSS_PCT     = 0.12  # hard stop: exit if price drops 12% from entry
+TRAIL_STOP_PCT    = 0.09  # trailing stop: exit if price drops 9% from peak
+REGIME_CONFIRM    = 3     # require 3 consecutive Bull Run bars before entry
+TIME_STOP_HOURS   = 24    # exit flat/losing trade after 24 hours
+PARTIAL_TAKE_PCT  = 0.05  # take 50% profit at +5% gain
+FEAR_GREED_MAX    = 60    # skip entry if Fear & Greed > 60 (greed = bad time to buy)
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -272,6 +275,8 @@ def run_backtest(
     df: pd.DataFrame,
     initial_capital: float = 10_000.0,
     leverage: float = LEVERAGE,
+    daily_df: pd.DataFrame = None,
+    fear_greed: pd.Series = None,
 ):
     # 1. HMM
     raw_features   = compute_hmm_features(df)
@@ -284,92 +289,131 @@ def run_backtest(
     # 2. Technical indicators
     indicators = compute_indicators(df)
 
-    # 3. Align to common valid index
-    valid_idx       = regime_series.index.intersection(indicators.dropna(how="any").index)
-    regime_aligned  = regime_series[valid_idx]
-    ind_aligned     = indicators.loc[valid_idx]
-    df_aligned      = df.loc[valid_idx]
+    # 3. Daily trend filter: price above daily EMA50
+    daily_trend = pd.Series(dtype=float)
+    if daily_df is not None and not daily_df.empty:
+        dc = _squeeze(daily_df["Close"])
+        daily_ema50 = dc.ewm(span=50, adjust=False).mean()
+        daily_trend = (dc > daily_ema50).astype(int)
 
-    # 4. Simulation
-    capital         = initial_capital
-    position        = 0
-    entry_price     = entry_time = entry_capital = None
-    peak_price      = None   # tracks highest close since entry (for trailing stop)
-    last_exit_time  = None
-    bull_streak     = 0      # consecutive Bull Run bars (regime confirmation)
+    # 4. Align to common valid index
+    valid_idx      = regime_series.index.intersection(indicators.dropna(how="any").index)
+    regime_aligned = regime_series[valid_idx]
+    ind_aligned    = indicators.loc[valid_idx]
+    df_aligned     = df.loc[valid_idx]
 
-    trades           = []
+    # 5. Simulation
+    capital       = initial_capital
+    position      = 0
+    entry_price   = entry_time = entry_capital = None
+    peak_price    = None
+    partial_taken = False
+    half_capital  = 0.0
+    last_exit_time = None
+    bull_streak    = 0
+
+    trades            = []
     portfolio_records = []
 
     for idx in valid_idx:
         row    = ind_aligned.loc[idx]
         regime = regime_aligned[idx]
         close  = float(_squeeze(df_aligned.loc[[idx], "Close"]).iloc[0])
+        date   = pd.Timestamp(idx).normalize()
 
-        # Track consecutive Bull Run bars
-        if regime == "Bull Run":
-            bull_streak += 1
-        else:
-            bull_streak = 0
+        bull_streak = bull_streak + 1 if regime == "Bull Run" else 0
 
-        # Update trailing stop peak
         if position == 1 and close > peak_price:
             peak_price = close
 
         # Live portfolio value
         if position == 1:
+            active_cap    = entry_capital / 2 if partial_taken else entry_capital
             pnl_factor    = (close - entry_price) / entry_price * leverage
-            current_value = max(entry_capital * (1 + pnl_factor), 0.0)
+            current_value = max(active_cap * (1 + pnl_factor) + half_capital, 0.0)
         else:
             current_value = capital
 
         votes = count_votes(row, close)
+
+        # ── Partial profit take at +PARTIAL_TAKE_PCT ────────────────────────
+        if position == 1 and not partial_taken:
+            if (close - entry_price) / entry_price >= PARTIAL_TAKE_PCT:
+                locked = (entry_capital / 2) * (1 + (close - entry_price) / entry_price * leverage)
+                half_capital  = locked
+                partial_taken = True
 
         # ── Exit conditions ──────────────────────────────────────────────────
         exit_reason = None
         if position == 1:
             drop_from_entry = (close - entry_price) / entry_price
             drop_from_peak  = (close - peak_price)  / peak_price
+            hours_held      = (idx - entry_time).total_seconds() / 3600
             if regime == "Bear/Crash":
-                exit_reason = "Regime → Bear/Crash"
+                exit_reason = "Regime: Bear/Crash"
             elif drop_from_entry <= -STOP_LOSS_PCT:
-                exit_reason = f"Stop Loss (-{STOP_LOSS_PCT*100:.0f}%)"
+                exit_reason = "Stop Loss"
             elif drop_from_peak <= -TRAIL_STOP_PCT:
-                exit_reason = f"Trailing Stop (-{TRAIL_STOP_PCT*100:.0f}% from peak)"
+                exit_reason = "Trailing Stop"
+            elif hours_held >= TIME_STOP_HOURS and drop_from_entry <= 0:
+                exit_reason = "Time Stop (24h)"
 
         if exit_reason:
+            active_cap = entry_capital / 2 if partial_taken else entry_capital
             pnl_factor = (close - entry_price) / entry_price * leverage
-            trade_pnl  = entry_capital * pnl_factor
-            capital    = max(entry_capital + trade_pnl, 0.0)
+            new_cap    = max(active_cap * (1 + pnl_factor) + half_capital, 0.0)
+            trade_pnl  = new_cap - entry_capital
+            capital    = entry_capital + trade_pnl
             trades.append({
-                "entry_time":  entry_time,
-                "exit_time":   idx,
-                "entry_price": entry_price,
-                "exit_price":  close,
-                "pnl_pct":     pnl_factor * 100,
-                "pnl_dollar":  trade_pnl,
-                "exit_reason": exit_reason,
+                "entry_time":    entry_time,
+                "exit_time":     idx,
+                "entry_price":   entry_price,
+                "exit_price":    close,
+                "pnl_pct":       trade_pnl / entry_capital * 100,
+                "pnl_dollar":    trade_pnl,
+                "exit_reason":   exit_reason,
+                "partial_taken": partial_taken,
             })
             position = 0
             entry_price = entry_time = entry_capital = peak_price = None
+            partial_taken = False
+            half_capital  = 0.0
             last_exit_time = idx
             current_value  = capital
 
         # ── Entry condition ──────────────────────────────────────────────────
-        # Require: Bull Run for ≥ REGIME_CONFIRM bars + votes ≥ threshold + no cooldown
-        if (position == 0 and regime == "Bull Run"
-                and bull_streak >= REGIME_CONFIRM
-                and votes >= VOTE_THRESHOLD):
+        can_enter = (
+            position == 0
+            and regime == "Bull Run"
+            and bull_streak >= REGIME_CONFIRM
+            and votes >= VOTE_THRESHOLD
+        )
+        if can_enter:
+            # Daily trend filter
+            if not daily_trend.empty:
+                dval = daily_trend.reindex([date], method="ffill")
+                if dval.empty or dval.iloc[0] == 0:
+                    can_enter = False
+
+            # Fear & Greed filter
+            if can_enter and fear_greed is not None and not fear_greed.empty:
+                fval = fear_greed.reindex([date], method="ffill")
+                if not fval.empty and not pd.isna(fval.iloc[0]):
+                    if fval.iloc[0] > FEAR_GREED_MAX:
+                        can_enter = False
+
+        if can_enter:
             in_cooldown = False
             if last_exit_time is not None:
-                hours_since = (idx - last_exit_time).total_seconds() / 3600
-                in_cooldown = hours_since < COOLDOWN_HOURS
+                in_cooldown = (idx - last_exit_time).total_seconds() / 3600 < COOLDOWN_HOURS
             if not in_cooldown:
                 position      = 1
                 entry_price   = close
                 peak_price    = close
                 entry_time    = idx
                 entry_capital = capital
+                partial_taken = False
+                half_capital  = 0.0
 
         portfolio_records.append({
             "time":   idx,
@@ -383,17 +427,20 @@ def run_backtest(
     # Force-close at end of data
     if position == 1:
         close      = float(_squeeze(df_aligned.iloc[[-1]]["Close"]).iloc[0])
+        active_cap = entry_capital / 2 if partial_taken else entry_capital
         pnl_factor = (close - entry_price) / entry_price * leverage
-        trade_pnl  = entry_capital * pnl_factor
-        capital    = max(entry_capital + trade_pnl, 0.0)
+        new_cap    = max(active_cap * (1 + pnl_factor) + half_capital, 0.0)
+        trade_pnl  = new_cap - entry_capital
+        capital    = entry_capital + trade_pnl
         trades.append({
-            "entry_time":  entry_time,
-            "exit_time":   valid_idx[-1],
-            "entry_price": entry_price,
-            "exit_price":  close,
-            "pnl_pct":     pnl_factor * 100,
-            "pnl_dollar":  trade_pnl,
-            "exit_reason": "End of Data",
+            "entry_time":    entry_time,
+            "exit_time":     valid_idx[-1],
+            "entry_price":   entry_price,
+            "exit_price":    close,
+            "pnl_pct":       trade_pnl / entry_capital * 100,
+            "pnl_dollar":    trade_pnl,
+            "exit_reason":   "End of Data",
+            "partial_taken": partial_taken,
         })
 
     # 5. Build outputs
