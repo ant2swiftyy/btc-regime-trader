@@ -117,7 +117,7 @@ if cur_signal == "Long":
     action_emoji = "🟢"
     box_class  = "signal-buy"
     headline   = "NOW IS A GOOD TIME TO BUY BTC"
-    subline    = f"The AI model sees a Bull Run + {cur_votes}/8 indicators agree"
+    subline    = f"The AI model sees a Bull Run + {cur_votes}/12 indicators agree"
 elif cur_regime == "Bear/Crash":
     action     = "SELL / STAY OUT"
     action_emoji = "🔴"
@@ -155,8 +155,8 @@ st.markdown(f"""
 # ─── Current BTC price + vote bar ────────────────────────────────────────────
 p1, p2, p3 = st.columns(3)
 p1.metric("BTC Price Right Now", f"${cur_price:,.2f}")
-p2.metric("Signal Strength", f"{cur_votes}/8 indicators aligned",
-          delta="Strong" if cur_votes >= 7 else ("Moderate" if cur_votes >= 5 else "Weak"))
+p2.metric("Signal Strength", f"{cur_votes}/12 indicators aligned",
+          delta="Strong" if cur_votes >= 10 else ("Moderate" if cur_votes >= 7 else "Weak"))
 p3.metric("Market Mood", cur_regime)
 
 st.divider()
@@ -210,20 +210,43 @@ else:
 
 # ─── WHY section ─────────────────────────────────────────────────────────────
 with st.expander("🔍 Why is it saying this? (tap to see)"):
-    indicators_explained = [
-        ("RSI < 90",             cur_votes >= 1, "Bitcoin isn't overbought"),
-        ("Momentum > 1%",        cur_votes >= 2, "Price has upward momentum"),
-        ("Volatility < 6%",      cur_votes >= 3, "Market isn't too wild/risky"),
-        ("Volume above average", cur_votes >= 4, "More people are buying than usual"),
-        ("ADX > 25",             cur_votes >= 5, "There's a real trend, not just chop"),
-        ("Above 50hr average",   cur_votes >= 6, "Short-term trend is up"),
-        ("Above 200hr average",  cur_votes >= 7, "Long-term trend is up"),
-        ("MACD bullish",         cur_votes >= 8, "Momentum indicator is positive"),
+    latest_row = portfolio_df.iloc[-1]
+    ind_last   = None
+    try:
+        from backtester import compute_indicators, _squeeze
+        ind_df   = compute_indicators(df_aligned)
+        ind_last = ind_df.iloc[-1]
+    except Exception:
+        pass
+
+    def _chk(col, condition_fn):
+        if ind_last is None or pd.isna(ind_last.get(col, float("nan"))):
+            return False
+        try:
+            return bool(condition_fn(ind_last))
+        except Exception:
+            return False
+
+    cp = latest["close"]
+    checks = [
+        ("RSI < 90",              _chk("rsi",              lambda r: r["rsi"] < 90),              "Bitcoin isn't overbought"),
+        ("Momentum > 1%",         _chk("momentum",         lambda r: r["momentum"] > 1.0),         "Price has upward momentum"),
+        ("Volatility < 6%",       _chk("volatility",       lambda r: r["volatility"] < 6.0),       "Market isn't too wild/risky right now"),
+        ("Volume above average",  _chk("volume_above_sma", lambda r: r["volume_above_sma"] == 1),  "More people are trading than usual"),
+        ("ADX > 25",              _chk("adx",              lambda r: r["adx"] > 25),               "There's a real trend, not just sideways chop"),
+        ("Above 50hr average",    _chk("ema50",            lambda r: cp > r["ema50"]),             "Short-term price trend is up"),
+        ("Above 200hr average",   _chk("ema200",           lambda r: cp > r["ema200"]),            "Long-term price trend is up"),
+        ("MACD bullish",          _chk("macd",             lambda r: r["macd"] > r["signal_line"]),"Momentum indicator is positive"),
+        ("Supertrend bullish",    _chk("supertrend_bullish",lambda r: r["supertrend_bullish"] == 1),"Trend-following AI says uptrend"),
+        ("Price above VWAP",      _chk("vwap",             lambda r: cp > r["vwap"]),              "Price is above where most volume traded"),
+        ("Stoch RSI bullish",     _chk("stoch_k",          lambda r: r["stoch_k"] > r["stoch_d"] and r["stoch_k"] < 80), "Sensitive momentum signal is bullish & not overbought"),
+        ("OBV trending up",       _chk("obv",              lambda r: r["obv"] > r["obv_ema"]),     "Overall buying volume is growing"),
     ]
+
     st.markdown(f"**Market Mood (AI model):** {cur_regime}")
-    st.markdown(f"**Signals active: {cur_votes}/8** — need 7 or more to trigger a BUY")
+    st.markdown(f"**Signals active: {cur_votes}/12** — need 10 or more to trigger a BUY")
     st.markdown("---")
-    for name, active, meaning in indicators_explained:
+    for name, active, meaning in checks:
         icon = "✅" if active else "❌"
         st.markdown(f"{icon} **{name}** — {meaning}")
 
