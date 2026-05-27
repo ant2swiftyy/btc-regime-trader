@@ -175,7 +175,7 @@ if fg_val is not None:
     elif fg_val <= 55: fg_label = "Neutral"
     elif fg_val <= 75: fg_label = "Greed"
     else:              fg_label = "Extreme Greed"
-    fg_delta = "Good time to buy" if fg_val <= 45 else ("Risky — wait" if fg_val > 60 else "Neutral")
+    fg_delta = "Good time to buy" if fg_val <= 45 else ("Extreme greed — avoid" if fg_val > 75 else "Neutral")
     p4.metric(f"Fear & Greed: {fg_label}", fg_val, delta=fg_delta)
 else:
     p4.metric("Fear & Greed", "Unavailable")
@@ -231,12 +231,10 @@ else:
 
 # ─── WHY section ─────────────────────────────────────────────────────────────
 with st.expander("🔍 Why is it saying this? (tap to see)"):
-    latest_row = portfolio_df.iloc[-1]
-    ind_last   = None
+    ind_last = None
     try:
-        from backtester import compute_indicators, _squeeze
-        ind_df   = compute_indicators(df_aligned)
-        ind_last = ind_df.iloc[-1]
+        from backtester import compute_indicators
+        ind_last = compute_indicators(df_aligned).iloc[-1]
     except Exception:
         pass
 
@@ -464,7 +462,8 @@ st.divider()
 # ─── TRADE LOG ───────────────────────────────────────────────────────────────
 with st.expander(f"📋 Full Trade History ({metrics['num_trades']} trades — tap to view)"):
     if not trades_df.empty:
-        disp = trades_df.copy()
+        disp = trades_df[["entry_time","exit_time","entry_price","exit_price",
+                           "pnl_pct","pnl_dollar","exit_reason"]].copy()
         disp["entry_time"]  = pd.to_datetime(disp["entry_time"]).dt.strftime("%b %d %Y %H:%M")
         disp["exit_time"]   = pd.to_datetime(disp["exit_time"]).dt.strftime("%b %d %Y %H:%M")
         disp["entry_price"] = disp["entry_price"].map("${:,.2f}".format)

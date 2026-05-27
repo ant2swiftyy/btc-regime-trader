@@ -1,5 +1,5 @@
 """
-Regime-based backtester — v2 (enhanced indicators)
+Regime-based backtester — v3
 
 Pipeline:
   1. Compute 3 HMM features → train GaussianHMM (7 states)
@@ -8,9 +8,11 @@ Pipeline:
      Original 8 : RSI, Momentum, Volatility, Volume SMA,
                   ADX, EMA50, EMA200, MACD
      New 4      : Supertrend, VWAP, Stochastic RSI, OBV trend
-  4. Enter when Bull Run + votes ≥ 10/12
-  5. Exit when regime = Bear/Crash OR Supertrend turns bearish
-  6. 48-hour cooldown after any exit
+  4. Enter when Bull Run + streak ≥ 3 + votes ≥ VOTE_THRESHOLD (8)
+     + daily EMA50 uptrend + Fear & Greed ≤ 75 + no cooldown (24h)
+  5. Exit: Bear/Crash regime, stop loss (10%), trailing stop (7%),
+     or time stop (48h flat/losing, only outside Bull Run)
+  6. Partial profit: lock 50% at +4% gain
 """
 
 import warnings
@@ -245,7 +247,7 @@ def label_regimes(model, scaler, features_clean: pd.DataFrame):
     )
 
 
-# ─── Voting System (12 conditions, need ≥ 10) ────────────────────────────────
+# ─── Voting System (12 conditions, need ≥ VOTE_THRESHOLD) ───────────────────
 
 def count_votes(row: pd.Series, close: float) -> int:
     v = 0
@@ -446,7 +448,7 @@ def run_backtest(
     # 5. Build outputs
     portfolio_df = pd.DataFrame(portfolio_records).set_index("time")
     _cols        = ["entry_time","exit_time","entry_price","exit_price",
-                    "pnl_pct","pnl_dollar","exit_reason"]
+                    "pnl_pct","pnl_dollar","exit_reason","partial_taken"]
     trades_df    = pd.DataFrame(trades) if trades else pd.DataFrame(columns=_cols)
 
     # 6. Metrics
