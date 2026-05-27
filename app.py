@@ -380,7 +380,6 @@ fig.add_trace(go.Candlestick(
     decreasing_fillcolor="#ff5252",
 ))
 
-# Trade markers
 if not trades_df.empty:
     visible = trades_df[trades_df["exit_time"] >= cdf.index[0]]
     entries = visible[visible["entry_time"] >= cdf.index[0]]
